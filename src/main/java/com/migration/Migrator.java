@@ -75,6 +75,7 @@ public class Migrator {
 
         // Migrate data
         logger.debug("Migrating data for table {}", tableName);
+        mysqlConn.setAutoCommit(false); // Enable transaction control
         stmt = mssqlConn.createStatement();
         rs = stmt.executeQuery("SELECT * FROM " + tableName);
         StringBuilder insertStmt = new StringBuilder("INSERT INTO " + tableName + " (");
@@ -91,16 +92,35 @@ public class Migrator {
 
         PreparedStatement ps = mysqlConn.prepareStatement(insertStmt.toString());
         int rowCount = 0;
-        while (rs.next()) {
-            for (int i = 0; i < columns.size(); i++) {
-                ps.setObject(i + 1, rs.getObject(i + 1));
+        int batchSize = Config.getBatchSize();
+        try {
+            while (rs.next()) {
+                for (int i = 0; i < columns.size(); i++) {
+                    ps.setObject(i + 1, rs.getObject(i + 1));
+                }
+                ps.addBatch();
+                rowCount++;
+
+                if (rowCount % batchSize == 0) {
+                    ps.executeBatch();
+                    mysqlConn.commit();
+                    logger.debug("Committed batch of {} records for table {}", batchSize, tableName);
+                }
             }
-            ps.executeUpdate();
-            rowCount++;
+            // Commit remaining records
+            ps.executeBatch();
+            mysqlConn.commit();
+            logger.debug("Committed final batch of {} records for table {}", rowCount % batchSize, tableName);
+        } catch (SQLException e) {
+            logger.error("Error during batch insert for table {}, rolling back transaction", tableName, e);
+            mysqlConn.rollback();
+            throw e;
+        } finally {
+            ps.close();
+            rs.close();
+            stmt.close();
+            mysqlConn.setAutoCommit(true); // Restore auto-commit
         }
-        ps.close();
-        rs.close();
-        stmt.close();
         logger.debug("Migrated {} rows for table {}", rowCount, tableName);
 
         // Update total rows count
@@ -160,17 +180,37 @@ public class Migrator {
         }
 
         PreparedStatement ps = mysqlConn.prepareStatement(insertStmt.toString());
+        mysqlConn.setAutoCommit(false); // Enable transaction control
         int rowCount = 0;
-        while (rs.next()) {
-            for (int i = 0; i < columns.size(); i++) {
-                ps.setObject(i + 1, rs.getObject(i + 1));
+        int batchSize = Config.getBatchSize();
+        try {
+            while (rs.next()) {
+                for (int i = 0; i < columns.size(); i++) {
+                    ps.setObject(i + 1, rs.getObject(i + 1));
+                }
+                ps.addBatch();
+                rowCount++;
+
+                if (rowCount % batchSize == 0) {
+                    ps.executeBatch();
+                    mysqlConn.commit();
+                    logger.debug("Committed batch of {} records for delta sync of table {}", batchSize, tableName);
+                }
             }
-            ps.executeUpdate();
-            rowCount++;
+            // Commit remaining records
+            ps.executeBatch();
+            mysqlConn.commit();
+            logger.debug("Committed final batch of {} records for delta sync of table {}", rowCount % batchSize, tableName);
+        } catch (SQLException e) {
+            logger.error("Error during batch upsert for table {}, rolling back transaction", tableName, e);
+            mysqlConn.rollback();
+            throw e;
+        } finally {
+            ps.close();
+            rs.close();
+            stmt.close();
+            mysqlConn.setAutoCommit(true); // Restore auto-commit
         }
-        ps.close();
-        rs.close();
-        stmt.close();
         logger.debug("Synced {} rows for table {}", rowCount, tableName);
 
         // Update total rows count after delta

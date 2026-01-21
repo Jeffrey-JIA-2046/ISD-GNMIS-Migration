@@ -87,4 +87,20 @@ public class Config {
         logger.debug("Migration tables loaded: {}", tables);
         return tables;
     }
+
+    public static int getBatchSize() {
+        String batchSizeStr = properties.getProperty("migration.batch.size", "5000");
+        try {
+            int batchSize = Integer.parseInt(batchSizeStr);
+            if (batchSize <= 0) {
+                logger.warn("Invalid batch size {}, using default 5000", batchSize);
+                return 5000;
+            }
+            logger.debug("Batch size loaded: {}", batchSize);
+            return batchSize;
+        } catch (NumberFormatException e) {
+            logger.warn("Invalid batch size format {}, using default 5000", batchSizeStr);
+            return 5000;
+        }
+    }
 }
