@@ -38,17 +38,7 @@ public class Config {
         String url = properties.getProperty("mssql.url");
         String user = properties.getProperty("mssql.user");
         if (mssqlPassword == null) {
-            Console console = System.console();
-            if (console != null) {
-                char[] passwordArray = console.readPassword("Enter MSSQL password: ");
-                mssqlPassword = new String(passwordArray);
-                java.util.Arrays.fill(passwordArray, ' '); // Clear the array
-            } else {
-                Scanner scanner = new Scanner(System.in);
-                System.out.print("Enter MSSQL password: ");
-                mssqlPassword = scanner.nextLine();
-                scanner.close();
-            }
+            mssqlPassword = readPasswordSecurely("MSSQL");
         }
         Connection conn = DriverManager.getConnection(url, user, mssqlPassword);
         logger.info("MSSQL connection established");
@@ -60,17 +50,7 @@ public class Config {
         String url = properties.getProperty("mysql.url");
         String user = properties.getProperty("mysql.user");
         if (mysqlPassword == null) {
-            Console console = System.console();
-            if (console != null) {
-                char[] passwordArray = console.readPassword("Enter MySQL password: ");
-                mysqlPassword = new String(passwordArray);
-                java.util.Arrays.fill(passwordArray, ' '); // Clear the array
-            } else {
-                Scanner scanner = new Scanner(System.in);
-                System.out.print("Enter MySQL password: ");
-                mysqlPassword = scanner.nextLine();
-                scanner.close();
-            }
+            mysqlPassword = readPasswordSecurely("MySQL");
         }
         Connection conn = DriverManager.getConnection(url, user, mysqlPassword);
         logger.info("MySQL connection established");
@@ -101,6 +81,28 @@ public class Config {
         } catch (NumberFormatException e) {
             logger.warn("Invalid batch size format {}, using default 5000", batchSizeStr);
             return 5000;
+        }
+    }
+
+    /**
+     * Securely reads password from console with fallback warning.
+     * Uses Console.readPassword() when available, otherwise warns about visibility.
+     */
+    private static String readPasswordSecurely(String dbType) {
+        Console console = System.console();
+        if (console != null) {
+            char[] passwordArray = console.readPassword("Enter %s password: ", dbType);
+            String password = new String(passwordArray);
+            Arrays.fill(passwordArray, ' '); // Clear sensitive data from memory
+            return password;
+        } else {
+            // Fallback for environments without console (e.g., some IDEs)
+            logger.warn("Console not available for secure password input. Password may be visible on screen.");
+            System.out.print("Enter " + dbType + " password (WARNING: input may be visible): ");
+            Scanner scanner = new Scanner(System.in);
+            String password = scanner.nextLine();
+            // Don't close scanner here as it might close System.in
+            return password;
         }
     }
 }

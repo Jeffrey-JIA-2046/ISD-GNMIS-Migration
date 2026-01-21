@@ -45,10 +45,17 @@ public class Migrator {
     public void migrateTableFull(String tableName) throws SQLException {
         logger.info("Starting full migration for table {}", tableName);
 
+        // Validate table name to prevent SQL injection
+        if (!isValidTableName(tableName)) {
+            throw new IllegalArgumentException("Invalid table name: " + tableName);
+        }
+
         // Get column info
         logger.debug("Retrieving column information for table {}", tableName);
-        Statement stmt = mssqlConn.createStatement();
-        ResultSet rs = stmt.executeQuery("SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '" + tableName + "' ORDER BY ORDINAL_POSITION");
+        String columnQuery = "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
+        PreparedStatement stmt = mssqlConn.prepareStatement(columnQuery);
+        stmt.setString(1, tableName);
+        ResultSet rs = stmt.executeQuery();
         List<String> columns = new ArrayList<>();
         List<String> types = new ArrayList<>();
         while (rs.next()) {
@@ -76,8 +83,9 @@ public class Migrator {
         // Migrate data
         logger.debug("Migrating data for table {}", tableName);
         mysqlConn.setAutoCommit(false); // Enable transaction control
-        stmt = mssqlConn.createStatement();
-        rs = stmt.executeQuery("SELECT * FROM " + tableName);
+        String selectQuery = "SELECT * FROM " + tableName; // Safe because tableName is validated above
+        Statement selectStmt = mssqlConn.createStatement();
+        rs = selectStmt.executeQuery(selectQuery);
         StringBuilder insertStmt = new StringBuilder("INSERT INTO " + tableName + " (");
         for (int i = 0; i < columns.size(); i++) {
             insertStmt.append(columns.get(i));
@@ -118,14 +126,15 @@ public class Migrator {
         } finally {
             ps.close();
             rs.close();
-            stmt.close();
+            selectStmt.close();
             mysqlConn.setAutoCommit(true); // Restore auto-commit
         }
         logger.debug("Migrated {} rows for table {}", rowCount, tableName);
 
         // Update total rows count
+        String countQuery = "SELECT COUNT(*) FROM " + tableName; // Safe because tableName is validated above
         Statement countStmt = mysqlConn.createStatement();
-        ResultSet countRs = countStmt.executeQuery("SELECT COUNT(*) FROM " + tableName);
+        ResultSet countRs = countStmt.executeQuery(countQuery);
         if (countRs.next()) {
             totalRows.put(tableName, countRs.getInt(1));
         }
@@ -153,9 +162,15 @@ public class Migrator {
     public void syncTableDelta(String tableName, Timestamp lastSync) throws SQLException {
         logger.info("Starting delta sync for table {} since {}", tableName, lastSync);
 
+        // Validate table name to prevent SQL injection
+        if (!isValidTableName(tableName)) {
+            throw new IllegalArgumentException("Invalid table name: " + tableName);
+        }
+
         // Use 'updatets' column for change detection
         logger.debug("Querying changes for table {} since {}", tableName, lastSync);
-        PreparedStatement stmt = mssqlConn.prepareStatement("SELECT * FROM " + tableName + " WHERE updatets > ?");
+        String deltaQuery = "SELECT * FROM " + tableName + " WHERE updatets > ?"; // Safe because tableName is validated above
+        PreparedStatement stmt = mssqlConn.prepareStatement(deltaQuery);
         stmt.setTimestamp(1, lastSync);
         ResultSet rs = stmt.executeQuery();
 
@@ -214,8 +229,9 @@ public class Migrator {
         logger.debug("Synced {} rows for table {}", rowCount, tableName);
 
         // Update total rows count after delta
+        String countQuery = "SELECT COUNT(*) FROM " + tableName; // Safe because tableName is validated above
         Statement countStmt = mysqlConn.createStatement();
-        ResultSet countRs = countStmt.executeQuery("SELECT COUNT(*) FROM " + tableName);
+        ResultSet countRs = countStmt.executeQuery(countQuery);
         if (countRs.next()) {
             totalRows.put(tableName, countRs.getInt(1));
         }
@@ -266,9 +282,17 @@ public class Migrator {
 
     private List<String> getColumnNames(String tableName) throws SQLException {
         logger.debug("Retrieving column names for table {}", tableName);
+
+        // Validate table name to prevent SQL injection
+        if (!isValidTableName(tableName)) {
+            throw new IllegalArgumentException("Invalid table name: " + tableName);
+        }
+
         List<String> columns = new ArrayList<>();
-        Statement stmt = mssqlConn.createStatement();
-        ResultSet rs = stmt.executeQuery("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '" + tableName + "' ORDER BY ORDINAL_POSITION");
+        String query = "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
+        PreparedStatement stmt = mssqlConn.prepareStatement(query);
+        stmt.setString(1, tableName);
+        ResultSet rs = stmt.executeQuery();
         while (rs.next()) {
             columns.add(rs.getString("COLUMN_NAME"));
         }
@@ -276,5 +300,17 @@ public class Migrator {
         stmt.close();
         logger.debug("Retrieved {} columns for table {}", columns.size(), tableName);
         return columns;
+    }
+
+    /**
+     * Validates table name to prevent SQL injection.
+     * Only allows alphanumeric characters and underscores, must start with letter or underscore.
+     */
+    private boolean isValidTableName(String tableName) {
+        if (tableName == null || tableName.trim().isEmpty()) {
+            return false;
+        }
+        // Allow only alphanumeric characters and underscores, must start with letter or underscore
+        return tableName.matches("^[a-zA-Z_][a-zA-Z0-9_]*$");
     }
 }
