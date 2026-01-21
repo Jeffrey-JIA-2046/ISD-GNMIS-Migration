@@ -58,23 +58,26 @@ public class Main {
 
     private static void startDeltaSync() {
         logger.info("Initiating delta sync process");
-        Timestamp lastSync = new Timestamp(System.currentTimeMillis());
+        // Read the last sync timestamp from file, or use current time if not available
+        final Timestamp[] lastSync = {Config.readLastSyncTimestamp()};
         Timer timer = new Timer();
         timer.scheduleAtFixedRate(new TimerTask() {
             @Override
             public void run() {
-                logger.debug("Running scheduled delta sync");
+                logger.debug("Running scheduled delta sync from timestamp: {}", lastSync[0]);
                 Migrator migrator = new Migrator();
                 try {
                     migrator.connect();
                     List<String> tables = migrator.getTables();
                     for (String table : tables) {
-                        migrator.syncTableDelta(table, lastSync);
+                        migrator.syncTableDelta(table, lastSync[0]);
                     }
                     migrator.disconnect();
                     migrator.generateReport("Delta");
-                    lastSync.setTime(System.currentTimeMillis());
-                    logger.debug("Delta sync cycle completed");
+                    // Update the timestamp after successful sync
+                    lastSync[0] = new Timestamp(System.currentTimeMillis());
+                    Config.writeLastSyncTimestamp(lastSync[0]);
+                    logger.debug("Delta sync cycle completed, updated timestamp to: {}", lastSync[0]);
                 } catch (SQLException e) {
                     logger.error("Error during delta sync: {}", e.getMessage(), e);
                 }

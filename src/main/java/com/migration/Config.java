@@ -3,6 +3,9 @@ package com.migration;
 import java.io.Console;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -103,6 +106,40 @@ public class Config {
             String password = scanner.nextLine();
             // Don't close scanner here as it might close System.in
             return password;
+        }
+    }
+
+    /**
+     * Reads the last sync timestamp from file.
+     * Returns current time if file doesn't exist or is invalid.
+     */
+    public static java.sql.Timestamp readLastSyncTimestamp() {
+        Path timestampFile = Paths.get("last_sync_timestamp.txt");
+        try {
+            if (Files.exists(timestampFile)) {
+                String timestampStr = Files.readString(timestampFile).trim();
+                long timestamp = Long.parseLong(timestampStr);
+                logger.info("Read last sync timestamp: {}", new java.sql.Timestamp(timestamp));
+                return new java.sql.Timestamp(timestamp);
+            } else {
+                logger.info("Last sync timestamp file not found, using current time");
+            }
+        } catch (IOException | NumberFormatException e) {
+            logger.warn("Error reading last sync timestamp file: {}", e.getMessage());
+        }
+        return new java.sql.Timestamp(System.currentTimeMillis());
+    }
+
+    /**
+     * Writes the last sync timestamp to file.
+     */
+    public static void writeLastSyncTimestamp(java.sql.Timestamp timestamp) {
+        Path timestampFile = Paths.get("last_sync_timestamp.txt");
+        try {
+            Files.writeString(timestampFile, String.valueOf(timestamp.getTime()));
+            logger.info("Wrote last sync timestamp: {}", timestamp);
+        } catch (IOException e) {
+            logger.error("Error writing last sync timestamp file: {}", e.getMessage());
         }
     }
 }
