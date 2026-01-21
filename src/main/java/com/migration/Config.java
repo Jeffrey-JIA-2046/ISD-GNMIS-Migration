@@ -87,6 +87,22 @@ public class Config {
         }
     }
 
+    public static long getDeltaSyncIntervalMs() {
+        String intervalStr = properties.getProperty("migration.delta.interval.ms", "60000");
+        try {
+            long interval = Long.parseLong(intervalStr);
+            if (interval <= 0) {
+                logger.warn("Invalid delta sync interval {}, using default 60000ms", interval);
+                return 60000L;
+            }
+            logger.debug("Delta sync interval loaded: {}ms", interval);
+            return interval;
+        } catch (NumberFormatException e) {
+            logger.warn("Invalid delta sync interval format {}, using default 60000ms", intervalStr);
+            return 60000L;
+        }
+    }
+
     /**
      * Securely reads password from console with fallback warning.
      * Uses Console.readPassword() when available, otherwise warns about visibility.

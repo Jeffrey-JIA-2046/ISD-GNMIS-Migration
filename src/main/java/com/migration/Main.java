@@ -60,6 +60,7 @@ public class Main {
         logger.info("Initiating delta sync process");
         // Read the last sync timestamp from file, or use current time if not available
         final Timestamp[] lastSync = {Config.readLastSyncTimestamp()};
+        long syncInterval = Config.getDeltaSyncIntervalMs();
         Timer timer = new Timer();
         timer.scheduleAtFixedRate(new TimerTask() {
             @Override
@@ -82,8 +83,8 @@ public class Main {
                     logger.error("Error during delta sync: {}", e.getMessage(), e);
                 }
             }
-        }, 60000, 60000); // 60 seconds
-        logger.info("Delta sync scheduled to run every 60 seconds");
-        System.out.println("Delta sync started. It will run every minute in the background.");
+        }, syncInterval, syncInterval); // Use configured interval
+        logger.info("Delta sync scheduled to run every {} milliseconds", syncInterval);
+        System.out.println("Delta sync started. It will run every " + (syncInterval / 1000) + " seconds in the background.");
     }
 }
