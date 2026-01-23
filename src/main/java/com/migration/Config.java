@@ -71,6 +71,28 @@ public class Config {
         return tables;
     }
 
+    public static List<String> getFullMigrationTables() {
+        String tablesStr = properties.getProperty("migration.full.tables");
+        if (tablesStr == null || tablesStr.trim().isEmpty()) {
+            logger.warn("No full migration tables specified in config.properties, falling back to migration.tables");
+            return getMigrationTables();
+        }
+        List<String> tables = Arrays.asList(tablesStr.split(","));
+        logger.debug("Full migration tables loaded: {}", tables);
+        return tables;
+    }
+
+    public static List<String> getDeltaSyncTables() {
+        String tablesStr = properties.getProperty("migration.delta.tables");
+        if (tablesStr == null || tablesStr.trim().isEmpty()) {
+            logger.warn("No delta sync tables specified in config.properties, falling back to migration.tables");
+            return getMigrationTables();
+        }
+        List<String> tables = Arrays.asList(tablesStr.split(","));
+        logger.debug("Delta sync tables loaded: {}", tables);
+        return tables;
+    }
+
     public static int getBatchSize() {
         String batchSizeStr = properties.getProperty("migration.batch.size", "5000");
         try {

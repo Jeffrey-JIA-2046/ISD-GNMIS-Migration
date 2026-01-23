@@ -44,7 +44,7 @@ public class Main {
         Migrator migrator = new Migrator();
         try {
             migrator.connect();
-            List<String> tables = migrator.getTables();
+            List<String> tables = Config.getFullMigrationTables();
             for (String table : tables) {
                 migrator.migrateTableFull(table);
             }
@@ -69,7 +69,7 @@ public class Main {
                 Migrator migrator = new Migrator();
                 try {
                     migrator.connect();
-                    List<String> tables = migrator.getTables();
+                    List<String> tables = Config.getDeltaSyncTables();
                     for (String table : tables) {
                         migrator.syncTableDelta(table, lastSync[0]);
                     }
