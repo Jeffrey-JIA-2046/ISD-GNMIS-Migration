@@ -3,6 +3,7 @@ package com.migration;
 import java.io.Console;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -155,7 +156,7 @@ public class Config {
         Path timestampFile = Paths.get("last_sync_timestamp.txt");
         try {
             if (Files.exists(timestampFile)) {
-                String timestampStr = Files.readString(timestampFile).trim();
+                String timestampStr = new String(Files.readAllBytes(timestampFile), StandardCharsets.UTF_8).trim();
                 long timestamp = Long.parseLong(timestampStr);
                 logger.info("Read last sync timestamp: {}", new java.sql.Timestamp(timestamp));
                 return new java.sql.Timestamp(timestamp);
@@ -174,7 +175,7 @@ public class Config {
     public static void writeLastSyncTimestamp(java.sql.Timestamp timestamp) {
         Path timestampFile = Paths.get("last_sync_timestamp.txt");
         try {
-            Files.writeString(timestampFile, String.valueOf(timestamp.getTime()));
+            Files.write(timestampFile, String.valueOf(timestamp.getTime()).getBytes(StandardCharsets.UTF_8));
             logger.info("Wrote last sync timestamp: {}", timestamp);
         } catch (IOException e) {
             logger.error("Error writing last sync timestamp file: {}", e.getMessage());
