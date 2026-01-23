@@ -5,8 +5,6 @@ import java.util.List;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Set;
-import java.util.HashSet;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -177,10 +175,6 @@ public class Migrator {
         String keyColumn = columns.contains("refno") ? "refno" : columns.get(0);
         logger.debug("Using key column '{}' for table {}", keyColumn, tableName);
 
-        // Collect refnos if this is a hist table
-        Set<String> refnos = new HashSet<>();
-        boolean isHistTable = tableName.endsWith("hist");
-
         // Prepare INSERT statement
         StringBuilder insertStmt = new StringBuilder("INSERT INTO " + tableName + " (");
         for (int i = 0; i < columns.size(); i++) {
@@ -210,11 +204,6 @@ public class Migrator {
             Object[] rowData = new Object[columns.size()];
             for (int i = 0; i < columns.size(); i++) {
                 rowData[i] = rs.getObject(i + 1);
-            }
-
-            // Collect refno if hist table
-            if (isHistTable && columns.contains("refno")) {
-                refnos.add(rs.getString("refno"));
             }
 
             // Check if record exists in MySQL
@@ -304,12 +293,6 @@ public class Migrator {
         int totalProcessed = insertData.size() + updateData.size();
         logger.debug("Processed {} records for table {} ({} inserts, {} updates)", totalProcessed, tableName, insertData.size(), updateData.size());
 
-        // Sync related main table if hist table and refnos collected
-        if (isHistTable && !refnos.isEmpty()) {
-            String mainTable = tableName.replace("hist", "");
-            syncRelatedTable(mainTable, refnos);
-        }
-
         // Update total rows count after delta
         String countQuery = "SELECT COUNT(*) FROM " + tableName; // Safe because tableName is validated above
         Statement countStmt = mysqlConn.createStatement();
@@ -321,169 +304,6 @@ public class Migrator {
         countStmt.close();
 
         logger.info("Delta sync completed for table {}", tableName);
-    }
-
-    private void syncRelatedTable(String tableName, Set<String> refnos) throws SQLException {
-        logger.info("Starting sync for related table {} with {} refnos", tableName, refnos.size());
-
-        // Validate table name
-        if (!isValidTableName(tableName)) {
-            throw new IllegalArgumentException("Invalid table name: " + tableName);
-        }
-
-        // Get columns
-        List<String> columns = getColumnNames(tableName);
-        logger.debug("Columns for table {}: {}", tableName, columns);
-
-        // Determine key column (assume 'refno' if exists, else first column)
-        String keyColumn = columns.contains("refno") ? "refno" : columns.get(0);
-        logger.debug("Using key column '{}' for related table {}", keyColumn, tableName);
-
-        // Build IN clause for refnos
-        StringBuilder inClause = new StringBuilder("(");
-        for (int i = 0; i < refnos.size(); i++) {
-            inClause.append("?");
-            if (i < refnos.size() - 1) inClause.append(", ");
-        }
-        inClause.append(")");
-
-        String selectQuery = "SELECT * FROM " + tableName + " WHERE refno IN " + inClause.toString();
-        PreparedStatement stmt = mssqlConn.prepareStatement(selectQuery);
-        int idx = 1;
-        for (String refno : refnos) {
-            stmt.setString(idx++, refno);
-        }
-        ResultSet rs = stmt.executeQuery();
-
-        // Prepare INSERT statement
-        StringBuilder insertStmt = new StringBuilder("INSERT INTO " + tableName + " (");
-        for (int i = 0; i < columns.size(); i++) {
-            insertStmt.append(columns.get(i));
-            if (i < columns.size() - 1) insertStmt.append(", ");
-        }
-        insertStmt.append(") VALUES (");
-        for (int i = 0; i < columns.size(); i++) {
-            insertStmt.append("?");
-            if (i < columns.size() - 1) insertStmt.append(", ");
-        }
-        insertStmt.append(")");
-
-        // Prepare UPDATE statement
-        StringBuilder updateStmt = new StringBuilder("UPDATE " + tableName + " SET ");
-        for (int i = 0; i < columns.size(); i++) {
-            updateStmt.append(columns.get(i)).append(" = ?");
-            if (i < columns.size() - 1) updateStmt.append(", ");
-        }
-        updateStmt.append(" WHERE ").append(keyColumn).append(" = ?");
-
-        // Collect data for batch processing
-        List<Object[]> insertData = new ArrayList<>();
-        List<Object[]> updateData = new ArrayList<>();
-
-        while (rs.next()) {
-            Object[] rowData = new Object[columns.size()];
-            for (int i = 0; i < columns.size(); i++) {
-                rowData[i] = rs.getObject(i + 1);
-            }
-
-            // Check if record exists in MySQL
-            String checkQuery = "SELECT 1 FROM " + tableName + " WHERE " + keyColumn + " = ? LIMIT 1";
-            PreparedStatement checkStmt = mysqlConn.prepareStatement(checkQuery);
-            checkStmt.setObject(1, rs.getObject(keyColumn));
-            ResultSet checkRs = checkStmt.executeQuery();
-            boolean exists = checkRs.next();
-            checkRs.close();
-            checkStmt.close();
-
-            if (exists) {
-                updateData.add(rowData);
-            } else {
-                insertData.add(rowData);
-            }
-        }
-        rs.close();
-        stmt.close();
-
-        // Batch INSERT
-        if (!insertData.isEmpty()) {
-            PreparedStatement insertPs = mysqlConn.prepareStatement(insertStmt.toString());
-            mysqlConn.setAutoCommit(false);
-            int insertCount = 0;
-            try {
-                for (Object[] row : insertData) {
-                    for (int i = 0; i < row.length; i++) {
-                        insertPs.setObject(i + 1, row[i]);
-                    }
-                    insertPs.addBatch();
-                    insertCount++;
-                    if (insertCount % Config.getBatchSize() == 0) {
-                        insertPs.executeBatch();
-                        mysqlConn.commit();
-                        logger.debug("Committed batch of {} INSERTs for related table {}", Config.getBatchSize(), tableName);
-                    }
-                }
-                insertPs.executeBatch();
-                mysqlConn.commit();
-                logger.debug("Committed final batch of {} INSERTs for related table {}", insertCount % Config.getBatchSize(), tableName);
-            } catch (SQLException e) {
-                logger.error("Error during batch INSERT for related table {}, rolling back transaction", tableName, e);
-                mysqlConn.rollback();
-                throw e;
-            } finally {
-                insertPs.close();
-                mysqlConn.setAutoCommit(true);
-            }
-            logger.debug("Inserted {} new records for related table {}", insertCount, tableName);
-        }
-
-        // Batch UPDATE
-        if (!updateData.isEmpty()) {
-            PreparedStatement updatePs = mysqlConn.prepareStatement(updateStmt.toString());
-            mysqlConn.setAutoCommit(false);
-            int updateCount = 0;
-            try {
-                for (Object[] row : updateData) {
-                    for (int i = 0; i < row.length; i++) {
-                        updatePs.setObject(i + 1, row[i]);
-                    }
-                    // Set key for WHERE clause
-                    updatePs.setObject(row.length + 1, row[columns.indexOf(keyColumn)]);
-                    updatePs.addBatch();
-                    updateCount++;
-                    if (updateCount % Config.getBatchSize() == 0) {
-                        updatePs.executeBatch();
-                        mysqlConn.commit();
-                        logger.debug("Committed batch of {} UPDATEs for related table {}", Config.getBatchSize(), tableName);
-                    }
-                }
-                updatePs.executeBatch();
-                mysqlConn.commit();
-                logger.debug("Committed final batch of {} UPDATEs for related table {}", updateCount % Config.getBatchSize(), tableName);
-            } catch (SQLException e) {
-                logger.error("Error during batch UPDATE for related table {}, rolling back transaction", tableName, e);
-                mysqlConn.rollback();
-                throw e;
-            } finally {
-                updatePs.close();
-                mysqlConn.setAutoCommit(true);
-            }
-            logger.debug("Updated {} existing records for related table {}", updateCount, tableName);
-        }
-
-        int totalProcessed = insertData.size() + updateData.size();
-        logger.debug("Processed {} records for related table {} ({} inserts, {} updates)", totalProcessed, tableName, insertData.size(), updateData.size());
-
-        // Update total rows count
-        String countQuery = "SELECT COUNT(*) FROM " + tableName;
-        Statement countStmt = mysqlConn.createStatement();
-        ResultSet countRs = countStmt.executeQuery(countQuery);
-        if (countRs.next()) {
-            totalRows.put(tableName, countRs.getInt(1));
-        }
-        countRs.close();
-        countStmt.close();
-
-        logger.info("Related sync completed for table {}", tableName);
     }
 
     public void generateReport(String type) {
