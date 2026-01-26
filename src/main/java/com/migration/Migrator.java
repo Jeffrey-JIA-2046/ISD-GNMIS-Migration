@@ -95,6 +95,7 @@ public class Migrator {
         PreparedStatement ps = mysqlConn.prepareStatement(insertStmt.toString());
         int rowCount = 0;
         int batchSize = Config.getBatchSize();
+        long startTime = System.currentTimeMillis();
         try {
             while (rs.next()) {
                 for (int i = 0; i < columns.size(); i++) {
@@ -106,13 +107,19 @@ public class Migrator {
                 if (rowCount % batchSize == 0) {
                     ps.executeBatch();
                     mysqlConn.commit();
-                    logger.debug("Committed batch of {} records for table {}", batchSize, tableName);
+                    long elapsed = System.currentTimeMillis() - startTime;
+                    double avgTimePerBatch = (double) elapsed / (rowCount / batchSize);
+                    logger.info("[PROGRESS] Table: {} | Committed: {} records | Batch#: {} | Elapsed: {} ms | Avg per batch: {:.2f} ms", 
+                        tableName, rowCount, rowCount / batchSize, elapsed, avgTimePerBatch);
                 }
             }
             // Commit remaining records
             ps.executeBatch();
             mysqlConn.commit();
-            logger.debug("Committed final batch of {} records for table {}", rowCount % batchSize, tableName);
+            long totalElapsed = System.currentTimeMillis() - startTime;
+            int remainingRecords = rowCount % batchSize;
+            logger.info("[PROGRESS] Table: {} | Final commit: {} records | Total migrated: {} records | Total time: {} ms | Avg speed: {:.2f} records/sec", 
+                tableName, remainingRecords > 0 ? remainingRecords : batchSize, rowCount, totalElapsed, rowCount * 1000.0 / totalElapsed);
         } catch (SQLException e) {
             logger.error("Error during batch insert for table {}, rolling back transaction", tableName, e);
             mysqlConn.rollback();
@@ -230,6 +237,7 @@ public class Migrator {
             PreparedStatement insertPs = mysqlConn.prepareStatement(insertStmt.toString());
             mysqlConn.setAutoCommit(false);
             int insertCount = 0;
+            long insertStartTime = System.currentTimeMillis();
             try {
                 for (Object[] row : insertData) {
                     for (int i = 0; i < row.length; i++) {
@@ -240,12 +248,17 @@ public class Migrator {
                     if (insertCount % Config.getBatchSize() == 0) {
                         insertPs.executeBatch();
                         mysqlConn.commit();
-                        logger.debug("Committed batch of {} INSERTs for table {}", Config.getBatchSize(), tableName);
+                        long elapsed = System.currentTimeMillis() - insertStartTime;
+                        double progress = (insertCount * 100.0) / insertData.size();
+                        logger.info("[DELTA-INSERT] Table: {} | Progress: {:.1f}% | Inserted: {}/{} records | Elapsed: {} ms", 
+                            tableName, progress, insertCount, insertData.size(), elapsed);
                     }
                 }
                 insertPs.executeBatch();
                 mysqlConn.commit();
-                logger.debug("Committed final batch of {} INSERTs for table {}", insertCount % Config.getBatchSize(), tableName);
+                long totalInsertTime = System.currentTimeMillis() - insertStartTime;
+                logger.info("[DELTA-INSERT] Table: {} | Completed: {}/{} records | Total time: {} ms | Avg speed: {:.2f} records/sec", 
+                    tableName, insertCount, insertData.size(), totalInsertTime, insertCount * 1000.0 / totalInsertTime);
             } catch (SQLException e) {
                 logger.error("Error during batch INSERT for table {}, rolling back transaction", tableName, e);
                 mysqlConn.rollback();
@@ -262,6 +275,7 @@ public class Migrator {
             PreparedStatement updatePs = mysqlConn.prepareStatement(updateStmt.toString());
             mysqlConn.setAutoCommit(false);
             int updateCount = 0;
+            long updateStartTime = System.currentTimeMillis();
             try {
                 for (Object[] row : updateData) {
                     for (int i = 0; i < row.length; i++) {
@@ -274,12 +288,17 @@ public class Migrator {
                     if (updateCount % Config.getBatchSize() == 0) {
                         updatePs.executeBatch();
                         mysqlConn.commit();
-                        logger.debug("Committed batch of {} UPDATEs for table {}", Config.getBatchSize(), tableName);
+                        long elapsed = System.currentTimeMillis() - updateStartTime;
+                        double progress = (updateCount * 100.0) / updateData.size();
+                        logger.info("[DELTA-UPDATE] Table: {} | Progress: {:.1f}% | Updated: {}/{} records | Elapsed: {} ms", 
+                            tableName, progress, updateCount, updateData.size(), elapsed);
                     }
                 }
                 updatePs.executeBatch();
                 mysqlConn.commit();
-                logger.debug("Committed final batch of {} UPDATEs for table {}", updateCount % Config.getBatchSize(), tableName);
+                long totalUpdateTime = System.currentTimeMillis() - updateStartTime;
+                logger.info("[DELTA-UPDATE] Table: {} | Completed: {}/{} records | Total time: {} ms | Avg speed: {:.2f} records/sec", 
+                    tableName, updateCount, updateData.size(), totalUpdateTime, updateCount * 1000.0 / totalUpdateTime);
             } catch (SQLException e) {
                 logger.error("Error during batch UPDATE for table {}, rolling back transaction", tableName, e);
                 mysqlConn.rollback();
