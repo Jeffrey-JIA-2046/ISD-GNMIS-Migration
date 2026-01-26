@@ -43,7 +43,7 @@ public class Migrator {
             throw new IllegalArgumentException("Invalid table name: " + tableName);
         }
 
-        // Get column info
+        // Get column info and identify ID column
         logger.debug("Retrieving column information for table {}", tableName);
         String columnQuery = "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
         PreparedStatement stmt = mssqlConn.prepareStatement(columnQuery);
@@ -51,12 +51,28 @@ public class Migrator {
         ResultSet rs = stmt.executeQuery();
         List<String> columns = new ArrayList<>();
         List<String> types = new ArrayList<>();
+        String idColumn = null;
         while (rs.next()) {
-            columns.add(rs.getString("COLUMN_NAME"));
-            types.add(rs.getString("DATA_TYPE"));
+            String colName = rs.getString("COLUMN_NAME");
+            String colType = rs.getString("DATA_TYPE");
+            columns.add(colName);
+            types.add(colType);
+            // Identify ID column (system generated integer key)
+            if (idColumn == null && colType.equalsIgnoreCase("int") && 
+                (colName.equalsIgnoreCase("id") || colName.toLowerCase().endsWith("id"))) {
+                idColumn = colName;
+            }
         }
         rs.close();
         stmt.close();
+        
+        // If no ID column found, use first column as fallback
+        if (idColumn == null && !columns.isEmpty()) {
+            idColumn = columns.get(0);
+            logger.warn("No integer ID column found for table {}, using first column '{}' as identifier", tableName, idColumn);
+        } else {
+            logger.debug("Using '{}' as ID column for table {}", idColumn, tableName);
+        }
         logger.debug("Found {} columns for table {}", columns.size(), tableName);
 
         // Create table in MySQL if not exists
@@ -74,12 +90,14 @@ public class Migrator {
         mysqlStmt.close();
         logger.debug("Table {} created or already exists in MySQL", tableName);
 
-        // Migrate data
-        logger.debug("Migrating data for table {}", tableName);
+        // Migrate data with existence check
+        logger.debug("Migrating data for table {} with duplicate check on '{}'", tableName, idColumn);
         mysqlConn.setAutoCommit(false); // Enable transaction control
         String selectQuery = "SELECT * FROM " + tableName; // Safe because tableName is validated above
         Statement selectStmt = mssqlConn.createStatement();
         rs = selectStmt.executeQuery(selectQuery);
+        
+        // Prepare INSERT statement
         StringBuilder insertStmt = new StringBuilder("INSERT INTO " + tableName + " (");
         for (int i = 0; i < columns.size(); i++) {
             insertStmt.append(columns.get(i));
@@ -91,46 +109,97 @@ public class Migrator {
             if (i < columns.size() - 1) insertStmt.append(", ");
         }
         insertStmt.append(")");
+        
+        // Prepare UPDATE statement
+        StringBuilder updateStmt = new StringBuilder("UPDATE " + tableName + " SET ");
+        for (int i = 0; i < columns.size(); i++) {
+            updateStmt.append(columns.get(i)).append(" = ?");
+            if (i < columns.size() - 1) updateStmt.append(", ");
+        }
+        updateStmt.append(" WHERE ").append(idColumn).append(" = ?");
 
-        PreparedStatement ps = mysqlConn.prepareStatement(insertStmt.toString());
-        int rowCount = 0;
+        PreparedStatement insertPs = mysqlConn.prepareStatement(insertStmt.toString());
+        PreparedStatement updatePs = mysqlConn.prepareStatement(updateStmt.toString());
+        PreparedStatement checkPs = mysqlConn.prepareStatement("SELECT 1 FROM " + tableName + " WHERE " + idColumn + " = ? LIMIT 1");
+        
+        int insertCount = 0;
+        int updateCount = 0;
+        int skipCount = 0;
         int batchSize = Config.getBatchSize();
         long startTime = System.currentTimeMillis();
+        final int idColumnIndex = columns.indexOf(idColumn) + 1;
+        
         try {
             while (rs.next()) {
-                for (int i = 0; i < columns.size(); i++) {
-                    ps.setObject(i + 1, rs.getObject(i + 1));
-                }
-                ps.addBatch();
-                rowCount++;
-
-                if (rowCount % batchSize == 0) {
-                    ps.executeBatch();
-                    mysqlConn.commit();
-                    long elapsed = System.currentTimeMillis() - startTime;
-                    double avgTimePerBatch = (double) elapsed / (rowCount / batchSize);
-                    logger.info("[PROGRESS] Table: {} | Committed: {} records | Batch#: {} | Elapsed: {} ms | Avg per batch: {:.2f} ms", 
-                        tableName, rowCount, rowCount / batchSize, elapsed, avgTimePerBatch);
+                Object idValue = rs.getObject(idColumnIndex);
+                
+                // Check if record exists in MySQL
+                checkPs.setObject(1, idValue);
+                ResultSet checkRs = checkPs.executeQuery();
+                boolean exists = checkRs.next();
+                checkRs.close();
+                
+                if (exists) {
+                    // Update existing record
+                    for (int i = 0; i < columns.size(); i++) {
+                        updatePs.setObject(i + 1, rs.getObject(i + 1));
+                    }
+                    updatePs.setObject(columns.size() + 1, idValue);
+                    updatePs.addBatch();
+                    updateCount++;
+                    
+                    if (updateCount % batchSize == 0) {
+                        updatePs.executeBatch();
+                        mysqlConn.commit();
+                        long elapsed = System.currentTimeMillis() - startTime;
+                        logger.info("[PROGRESS-UPDATE] Table: {} | Updated: {} records | Elapsed: {} ms", 
+                            tableName, updateCount, elapsed);
+                    }
+                } else {
+                    // Insert new record
+                    for (int i = 0; i < columns.size(); i++) {
+                        insertPs.setObject(i + 1, rs.getObject(i + 1));
+                    }
+                    insertPs.addBatch();
+                    insertCount++;
+                    
+                    if (insertCount % batchSize == 0) {
+                        insertPs.executeBatch();
+                        mysqlConn.commit();
+                        long elapsed = System.currentTimeMillis() - startTime;
+                        logger.info("[PROGRESS-INSERT] Table: {} | Inserted: {} records | Elapsed: {} ms", 
+                            tableName, insertCount, elapsed);
+                    }
                 }
             }
+            
             // Commit remaining records
-            ps.executeBatch();
-            mysqlConn.commit();
+            if (insertCount % batchSize != 0) {
+                insertPs.executeBatch();
+                mysqlConn.commit();
+            }
+            if (updateCount % batchSize != 0) {
+                updatePs.executeBatch();
+                mysqlConn.commit();
+            }
+            
             long totalElapsed = System.currentTimeMillis() - startTime;
-            int remainingRecords = rowCount % batchSize;
-            logger.info("[PROGRESS] Table: {} | Final commit: {} records | Total migrated: {} records | Total time: {} ms | Avg speed: {:.2f} records/sec", 
-                tableName, remainingRecords > 0 ? remainingRecords : batchSize, rowCount, totalElapsed, rowCount * 1000.0 / totalElapsed);
+            int totalProcessed = insertCount + updateCount;
+            logger.info("[PROGRESS] Table: {} | Summary - Inserted: {} | Updated: {} | Total: {} records | Total time: {} ms | Avg speed: {:.2f} records/sec", 
+                tableName, insertCount, updateCount, totalProcessed, totalElapsed, totalProcessed * 1000.0 / totalElapsed);
         } catch (SQLException e) {
-            logger.error("Error during batch insert for table {}, rolling back transaction", tableName, e);
+            logger.error("Error during migration for table {}, rolling back transaction", tableName, e);
             mysqlConn.rollback();
             throw e;
         } finally {
-            ps.close();
+            insertPs.close();
+            updatePs.close();
+            checkPs.close();
             rs.close();
             selectStmt.close();
             mysqlConn.setAutoCommit(true); // Restore auto-commit
         }
-        logger.debug("Migrated {} rows for table {}", rowCount, tableName);
+        logger.debug("Migrated {} rows for table {} (Inserted: {}, Updated: {})", insertCount + updateCount, tableName, insertCount, updateCount);
 
         // Update total rows count
         String countQuery = "SELECT COUNT(*) FROM " + tableName; // Safe because tableName is validated above
