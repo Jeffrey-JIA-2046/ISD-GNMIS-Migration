@@ -50,7 +50,12 @@ public class Main {
             }
             migrator.disconnect();
             migrator.generateReport("Full");
-            logger.info("Full migration process completed successfully");
+            
+            // Write last sync timestamp after successful full migration
+            Timestamp currentTimestamp = new Timestamp(System.currentTimeMillis());
+            Config.writeLastSyncTimestamp(currentTimestamp);
+            logger.info("Full migration process completed successfully. Last sync timestamp saved: {}", currentTimestamp);
+            System.out.println("Full migration completed. Last sync timestamp saved for delta sync.");
         } catch (SQLException e) {
             logger.error("Error during full migration: {}", e.getMessage(), e);
         }
