@@ -67,6 +67,7 @@ public class Migrator {
             createStmt.append(columns.get(i)).append(" ").append(mysqlType);
             if (i < columns.size() - 1) createStmt.append(", ");
         }
+        logger.debug(createStmt.toString());
         createStmt.append(")");
         Statement mysqlStmt = mysqlConn.createStatement();
         mysqlStmt.execute(createStmt.toString());
