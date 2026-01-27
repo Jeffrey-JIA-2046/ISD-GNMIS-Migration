@@ -58,7 +58,7 @@ public class Migrator {
             columns.add(colName);
             types.add(colType);
             // Identify ID column (system generated integer key)
-            if (idColumn == null && colType.equalsIgnoreCase("int") && 
+            if (idColumn == null && colType.equalsIgnoreCase("bigint") && 
                 (colName.equalsIgnoreCase("id") || colName.toLowerCase().endsWith("id"))) {
                 idColumn = colName;
             }
@@ -92,6 +92,19 @@ public class Migrator {
 
         // Migrate data with existence check
         logger.debug("Migrating data for table {} with duplicate check on '{}'", tableName, idColumn);
+        
+        // Get total row count for progress tracking
+        String countQuery = "SELECT COUNT(*) FROM " + tableName; // Safe because tableName is validated above
+        Statement countStmt = mssqlConn.createStatement();
+        ResultSet countRs = countStmt.executeQuery(countQuery);
+        int totalRowCount = 0;
+        if (countRs.next()) {
+            totalRowCount = countRs.getInt(1);
+        }
+        countRs.close();
+        countStmt.close();
+        logger.info("Total rows to migrate for table {}: {}", tableName, totalRowCount);
+        
         mysqlConn.setAutoCommit(false); // Enable transaction control
         String selectQuery = "SELECT * FROM " + tableName; // Safe because tableName is validated above
         Statement selectStmt = mssqlConn.createStatement();
@@ -109,28 +122,21 @@ public class Migrator {
             if (i < columns.size() - 1) insertStmt.append(", ");
         }
         insertStmt.append(")");
-        
-        // Prepare UPDATE statement
-        StringBuilder updateStmt = new StringBuilder("UPDATE " + tableName + " SET ");
-        for (int i = 0; i < columns.size(); i++) {
-            updateStmt.append(columns.get(i)).append(" = ?");
-            if (i < columns.size() - 1) updateStmt.append(", ");
-        }
-        updateStmt.append(" WHERE ").append(idColumn).append(" = ?");
 
         PreparedStatement insertPs = mysqlConn.prepareStatement(insertStmt.toString());
-        PreparedStatement updatePs = mysqlConn.prepareStatement(updateStmt.toString());
         PreparedStatement checkPs = mysqlConn.prepareStatement("SELECT 1 FROM " + tableName + " WHERE " + idColumn + " = ? LIMIT 1");
         
         int insertCount = 0;
         int updateCount = 0;
         int skipCount = 0;
+        int totalProcessed = 0;
         int batchSize = Config.getBatchSize();
         long startTime = System.currentTimeMillis();
         final int idColumnIndex = columns.indexOf(idColumn) + 1;
         
         try {
             while (rs.next()) {
+                totalProcessed++;
                 Object idValue = rs.getObject(idColumnIndex);
                 
                 // Check if record exists in MySQL
@@ -140,20 +146,15 @@ public class Migrator {
                 checkRs.close();
                 
                 if (exists) {
-                    // Update existing record
-                    for (int i = 0; i < columns.size(); i++) {
-                        updatePs.setObject(i + 1, rs.getObject(i + 1));
-                    }
-                    updatePs.setObject(columns.size() + 1, idValue);
-                    updatePs.addBatch();
-                    updateCount++;
+                    // Skip existing record
+                    skipCount++;
                     
-                    if (updateCount % batchSize == 0) {
-                        updatePs.executeBatch();
-                        mysqlConn.commit();
+                    if (totalProcessed % batchSize == 0) {
                         long elapsed = System.currentTimeMillis() - startTime;
-                        logger.info("[PROGRESS-UPDATE] Table: {} | Updated: {} records | Elapsed: {} ms", 
-                            tableName, updateCount, elapsed);
+                        double progress = totalRowCount > 0 ? (totalProcessed * 100.0 / totalRowCount) : 0;
+                        double avgSpeed = totalProcessed * 1000.0 / elapsed;
+                        logger.info("[PROGRESS-SKIP] Table: {} | Skipped: {} | Total: {}/{} ({:.1f}%) | Speed: {:.1f} rec/sec | Elapsed: {} ms", 
+                            tableName, skipCount, totalProcessed, totalRowCount, progress, avgSpeed, elapsed);
                     }
                 } else {
                     // Insert new record
@@ -167,8 +168,10 @@ public class Migrator {
                         insertPs.executeBatch();
                         mysqlConn.commit();
                         long elapsed = System.currentTimeMillis() - startTime;
-                        logger.info("[PROGRESS-INSERT] Table: {} | Inserted: {} records | Elapsed: {} ms", 
-                            tableName, insertCount, elapsed);
+                        double progress = totalRowCount > 0 ? (totalProcessed * 100.0 / totalRowCount) : 0;
+                        double avgSpeed = totalProcessed * 1000.0 / elapsed;
+                        logger.info("[PROGRESS-INSERT] Table: {} | Inserted: {} | Total: {}/{} ({:.1f}%) | Speed: {:.1f} rec/sec | Elapsed: {} ms", 
+                            tableName, insertCount, totalProcessed, totalRowCount, progress, avgSpeed, elapsed);
                     }
                 }
             }
@@ -178,38 +181,32 @@ public class Migrator {
                 insertPs.executeBatch();
                 mysqlConn.commit();
             }
-            if (updateCount % batchSize != 0) {
-                updatePs.executeBatch();
-                mysqlConn.commit();
-            }
             
             long totalElapsed = System.currentTimeMillis() - startTime;
-            int totalProcessed = insertCount + updateCount;
-            logger.info("[PROGRESS] Table: {} | Summary - Inserted: {} | Updated: {} | Total: {} records | Total time: {} ms | Avg speed: {:.2f} records/sec", 
-                tableName, insertCount, updateCount, totalProcessed, totalElapsed, totalProcessed * 1000.0 / totalElapsed);
+            logger.info("[PROGRESS] Table: {} | Summary - Inserted: {} | Skipped: {} | Total: {}/{} (100.0%) | Total time: {} ms | Avg speed: {:.2f} records/sec", 
+                tableName, insertCount, skipCount, totalProcessed, totalRowCount, totalElapsed, totalProcessed * 1000.0 / totalElapsed);
         } catch (SQLException e) {
             logger.error("Error during migration for table {}, rolling back transaction", tableName, e);
             mysqlConn.rollback();
             throw e;
         } finally {
             insertPs.close();
-            updatePs.close();
             checkPs.close();
             rs.close();
             selectStmt.close();
             mysqlConn.setAutoCommit(true); // Restore auto-commit
         }
-        logger.debug("Migrated {} rows for table {} (Inserted: {}, Updated: {})", insertCount + updateCount, tableName, insertCount, updateCount);
+        logger.debug("Migrated {} rows for table {} (Inserted: {}, Skipped: {})", insertCount + skipCount, tableName, insertCount, skipCount);
 
         // Update total rows count
-        String countQuery = "SELECT COUNT(*) FROM " + tableName; // Safe because tableName is validated above
-        Statement countStmt = mysqlConn.createStatement();
-        ResultSet countRs = countStmt.executeQuery(countQuery);
-        if (countRs.next()) {
-            totalRows.put(tableName, countRs.getInt(1));
+        String finalCountQuery = "SELECT COUNT(*) FROM " + tableName; // Safe because tableName is validated above
+        Statement finalCountStmt = mysqlConn.createStatement();
+        ResultSet finalCountRs = finalCountStmt.executeQuery(finalCountQuery);
+        if (finalCountRs.next()) {
+            totalRows.put(tableName, finalCountRs.getInt(1));
         }
-        countRs.close();
-        countStmt.close();
+        finalCountRs.close();
+        finalCountStmt.close();
 
         logger.info("Full migration completed for table {}", tableName);
     }
