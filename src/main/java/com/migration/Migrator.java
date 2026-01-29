@@ -17,9 +17,25 @@ import java.io.IOException;
 public class Migrator {
     private static final Logger logger = LogManager.getLogger(Migrator.class);
     private static final Map<String, Integer> totalRows = new HashMap<>();
+    private static final List<RecordDetail> migratedRecords = new ArrayList<>();
 
     private Connection mssqlConn;
     private Connection mysqlConn;
+    
+    // Inner class to hold record details
+    private static class RecordDetail {
+        String tableName;
+        String operation; // INSERT, UPDATE, SKIP
+        Map<String, Object> recordData;
+        Timestamp timestamp;
+        
+        RecordDetail(String tableName, String operation, Map<String, Object> recordData) {
+            this.tableName = tableName;
+            this.operation = operation;
+            this.recordData = recordData;
+            this.timestamp = new Timestamp(System.currentTimeMillis());
+        }
+    }
 
     public void connect() throws SQLException {
         logger.info("Attempting to connect to databases");
@@ -149,6 +165,13 @@ public class Migrator {
                     // Skip existing record
                     skipCount++;
                     
+                    // Track skipped record details
+                    Map<String, Object> recordData = new HashMap<>();
+                    for (int i = 0; i < columns.size(); i++) {
+                        recordData.put(columns.get(i), rs.getObject(i + 1));
+                    }
+                    migratedRecords.add(new RecordDetail(tableName, "SKIP", recordData));
+                    
                     if (totalProcessed % batchSize == 0) {
                         long elapsed = System.currentTimeMillis() - startTime;
                         double progress = totalRowCount > 0 ? (totalProcessed * 100.0 / totalRowCount) : 0;
@@ -158,11 +181,17 @@ public class Migrator {
                     }
                 } else {
                     // Insert new record
+                    Map<String, Object> recordData = new HashMap<>();
                     for (int i = 0; i < columns.size(); i++) {
-                        insertPs.setObject(i + 1, rs.getObject(i + 1));
+                        Object value = rs.getObject(i + 1);
+                        insertPs.setObject(i + 1, value);
+                        recordData.put(columns.get(i), value);
                     }
                     insertPs.addBatch();
                     insertCount++;
+                    
+                    // Track inserted record details
+                    migratedRecords.add(new RecordDetail(tableName, "INSERT", recordData));
                     
                     if (insertCount % batchSize == 0) {
                         insertPs.executeBatch();
@@ -306,9 +335,14 @@ public class Migrator {
             long insertStartTime = System.currentTimeMillis();
             try {
                 for (Object[] row : insertData) {
+                    // Track inserted record details
+                    Map<String, Object> recordData = new HashMap<>();
                     for (int i = 0; i < row.length; i++) {
                         insertPs.setObject(i + 1, row[i]);
+                        recordData.put(columns.get(i), row[i]);
                     }
+                    migratedRecords.add(new RecordDetail(tableName, "INSERT", recordData));
+                    
                     insertPs.addBatch();
                     insertCount++;
                     if (insertCount % Config.getBatchSize() == 0) {
@@ -344,11 +378,16 @@ public class Migrator {
             long updateStartTime = System.currentTimeMillis();
             try {
                 for (Object[] row : updateData) {
+                    // Track updated record details
+                    Map<String, Object> recordData = new HashMap<>();
                     for (int i = 0; i < row.length; i++) {
                         updatePs.setObject(i + 1, row[i]);
+                        recordData.put(columns.get(i), row[i]);
                     }
                     // Set key for WHERE clause
                     updatePs.setObject(row.length + 1, row[columns.indexOf(keyColumn)]);
+                    migratedRecords.add(new RecordDetail(tableName, "UPDATE", recordData));
+                    
                     updatePs.addBatch();
                     updateCount++;
                     if (updateCount % Config.getBatchSize() == 0) {
@@ -413,30 +452,69 @@ public class Migrator {
                 logger.warn("Could not load existing delta report, creating new one: {}", e.getMessage());
                 workbook = new XSSFWorkbook();
                 sheet = workbook.createSheet("Migration Report");
-                createHeaderRow(sheet);
                 rowNum = 1;
             }
         } else {
             // Create new workbook for full sync or if delta report doesn't exist
             workbook = new XSSFWorkbook();
             sheet = workbook.createSheet("Migration Report");
-            createHeaderRow(sheet);
         }
 
-        // Data rows
-        long timestamp = System.currentTimeMillis();
-        for (Map.Entry<String, Integer> entry : totalRows.entrySet()) {
+        // Create or update header row with dynamic columns based on records
+        if (rowNum == 1 && !migratedRecords.isEmpty()) {
+            Row headerRow = sheet.createRow(0);
+            int colIdx = 0;
+            headerRow.createCell(colIdx++).setCellValue("Table Name");
+            headerRow.createCell(colIdx++).setCellValue("Operation");
+            headerRow.createCell(colIdx++).setCellValue("Timestamp");
+            
+            // Add column headers from first record
+            RecordDetail firstRecord = migratedRecords.get(0);
+            for (String columnName : firstRecord.recordData.keySet()) {
+                headerRow.createCell(colIdx++).setCellValue(columnName);
+            }
+        }
+
+        // Data rows - write each migrated record
+        for (RecordDetail record : migratedRecords) {
             Row row = sheet.createRow(rowNum++);
-            row.createCell(0).setCellValue(entry.getKey());
-            row.createCell(1).setCellValue(entry.getValue());
-            row.createCell(2).setCellValue(type);
-            row.createCell(3).setCellValue(new Timestamp(timestamp).toString());
+            int colIdx = 0;
+            
+            row.createCell(colIdx++).setCellValue(record.tableName);
+            row.createCell(colIdx++).setCellValue(record.operation);
+            row.createCell(colIdx++).setCellValue(record.timestamp.toString());
+            
+            // Add record data
+            for (Object value : record.recordData.values()) {
+                Cell cell = row.createCell(colIdx++);
+                if (value == null) {
+                    cell.setCellValue("");
+                } else if (value instanceof Number) {
+                    cell.setCellValue(((Number) value).doubleValue());
+                } else if (value instanceof Boolean) {
+                    cell.setCellValue((Boolean) value);
+                } else if (value instanceof Timestamp) {
+                    cell.setCellValue(((Timestamp) value).toString());
+                } else {
+                    cell.setCellValue(value.toString());
+                }
+            }
+        }
+
+        // Auto-size columns for better readability
+        if (sheet.getPhysicalNumberOfRows() > 0) {
+            Row headerRow = sheet.getRow(0);
+            if (headerRow != null) {
+                for (int i = 0; i < headerRow.getLastCellNum(); i++) {
+                    sheet.autoSizeColumn(i);
+                }
+            }
         }
 
         // Write to file
         try (FileOutputStream fileOut = new FileOutputStream(reportFileName)) {
             workbook.write(fileOut);
-            logger.info("Excel report generated: {}", reportFileName);
+            logger.info("Excel report generated: {} with {} records", reportFileName, migratedRecords.size());
         } catch (IOException e) {
             logger.error("Error generating report: {}", e.getMessage());
         } finally {
@@ -446,15 +524,10 @@ public class Migrator {
                 logger.error("Error closing workbook: {}", e.getMessage());
             }
         }
+        
+        // Clear migrated records after report generation
+        migratedRecords.clear();
         logger.info("Report generation completed");
-    }
-    
-    private void createHeaderRow(Sheet sheet) {
-        Row headerRow = sheet.createRow(0);
-        headerRow.createCell(0).setCellValue("Table Name");
-        headerRow.createCell(1).setCellValue("Total Rows Migrated");
-        headerRow.createCell(2).setCellValue("Migration Type");
-        headerRow.createCell(3).setCellValue("Timestamp");
     }
 
     private List<String> getColumnNames(String tableName) throws SQLException {
