@@ -156,15 +156,38 @@ public class Config {
         Path timestampFile = Paths.get("last_sync_timestamp.txt");
         try {
             if (Files.exists(timestampFile)) {
-                String timestampStr = new String(Files.readAllBytes(timestampFile), StandardCharsets.UTF_8).trim();
-                long timestamp = Long.parseLong(timestampStr);
-                logger.info("Read last sync timestamp: {}", new java.sql.Timestamp(timestamp));
-                return new java.sql.Timestamp(timestamp);
+                String content = new String(Files.readAllBytes(timestampFile), StandardCharsets.UTF_8).trim();
+                String[] lines = content.split("\\r?\\n");
+                
+                // Try to parse the second line (epoch time) first, fall back to first line
+                if (lines.length >= 2) {
+                    try {
+                        long timestamp = Long.parseLong(lines[1].trim());
+                        logger.info("Read last sync timestamp: {}", new java.sql.Timestamp(timestamp));
+                        return new java.sql.Timestamp(timestamp);
+                    } catch (NumberFormatException e) {
+                        // Fall through to parse human-readable format or single line
+                    }
+                }
+                
+                // Try to parse as epoch time (backward compatibility with old format)
+                try {
+                    long timestamp = Long.parseLong(lines[0].trim());
+                    logger.info("Read last sync timestamp: {}", new java.sql.Timestamp(timestamp));
+                    return new java.sql.Timestamp(timestamp);
+                } catch (NumberFormatException e) {
+                    // Try to parse as Timestamp string format
+                    java.sql.Timestamp ts = java.sql.Timestamp.valueOf(lines[0].trim());
+                    logger.info("Read last sync timestamp: {}", ts);
+                    return ts;
+                }
             } else {
                 logger.info("Last sync timestamp file not found, using current time");
             }
-        } catch (IOException | NumberFormatException e) {
+        } catch (IOException e) {
             logger.warn("Error reading last sync timestamp file: {}", e.getMessage());
+        } catch (IllegalArgumentException e) {
+            logger.warn("Invalid timestamp format in file: {}", e.getMessage());
         }
         return new java.sql.Timestamp(System.currentTimeMillis());
     }
@@ -175,7 +198,9 @@ public class Config {
     public static void writeLastSyncTimestamp(java.sql.Timestamp timestamp) {
         Path timestampFile = Paths.get("last_sync_timestamp.txt");
         try {
-            Files.write(timestampFile, String.valueOf(timestamp.getTime()).getBytes(StandardCharsets.UTF_8));
+            // Write both human-readable format and epoch time
+            String content = String.format("%s%n%d", timestamp.toString(), timestamp.getTime());
+            Files.write(timestampFile, content.getBytes(StandardCharsets.UTF_8));
             logger.info("Wrote last sync timestamp: {}", timestamp);
         } catch (IOException e) {
             logger.error("Error writing last sync timestamp file: {}", e.getMessage());

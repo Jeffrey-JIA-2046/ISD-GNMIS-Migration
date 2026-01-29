@@ -245,8 +245,8 @@ public class Migrator {
         String mysqlType;
         switch (mssqlType.toLowerCase()) {
             case "int": mysqlType = "INT"; break;
-            case "varchar": mysqlType = "VARCHAR(255)"; break;
-            case "nvarchar": mysqlType = "VARCHAR(255)"; break;
+            case "varchar": mysqlType = "TEXT"; break;
+            case "nvarchar": mysqlType = "LONGTEXT"; break;
             case "datetime": mysqlType = "DATETIME"; break;
             case "bit": mysqlType = "TINYINT(1)"; break;
             default: mysqlType = "VARCHAR(255)"; break;
@@ -460,7 +460,7 @@ public class Migrator {
             sheet = workbook.createSheet("Migration Report");
         }
 
-        // Create or update header row with dynamic columns based on records
+        // Create header row for new reports only (when rowNum == 1 means no existing data)
         if (rowNum == 1 && !migratedRecords.isEmpty()) {
             Row headerRow = sheet.createRow(0);
             int colIdx = 0;
@@ -473,6 +473,7 @@ public class Migrator {
             for (String columnName : firstRecord.recordData.keySet()) {
                 headerRow.createCell(colIdx++).setCellValue(columnName);
             }
+            rowNum = 1; // Start data rows after header
         }
 
         // Data rows - write each migrated record
