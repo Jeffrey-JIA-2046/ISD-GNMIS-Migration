@@ -394,18 +394,36 @@ public class Migrator {
 
     public void generateReport(String type) {
         logger.info("Generating {} migration report", type);
-        Workbook workbook = new XSSFWorkbook();
-        Sheet sheet = workbook.createSheet("Migration Report");
-
-        // Create header row
-        Row headerRow = sheet.createRow(0);
-        headerRow.createCell(0).setCellValue("Table Name");
-        headerRow.createCell(1).setCellValue("Total Rows Migrated");
-        headerRow.createCell(2).setCellValue("Migration Type");
-        headerRow.createCell(3).setCellValue("Timestamp");
+        
+        String reportFileName = type.equalsIgnoreCase("full") ? "full_sync_report.xlsx" : "delta_sync_report.xlsx";
+        boolean isDeltaSync = type.equalsIgnoreCase("delta");
+        
+        Workbook workbook;
+        Sheet sheet;
+        int rowNum = 1;
+        
+        // For delta sync, load existing report if it exists to append data
+        if (isDeltaSync && new java.io.File(reportFileName).exists()) {
+            try (java.io.FileInputStream fileIn = new java.io.FileInputStream(reportFileName)) {
+                workbook = new XSSFWorkbook(fileIn);
+                sheet = workbook.getSheetAt(0);
+                rowNum = sheet.getLastRowNum() + 1; // Start after the last row
+                logger.info("Appending to existing delta report at row {}", rowNum);
+            } catch (IOException e) {
+                logger.warn("Could not load existing delta report, creating new one: {}", e.getMessage());
+                workbook = new XSSFWorkbook();
+                sheet = workbook.createSheet("Migration Report");
+                createHeaderRow(sheet);
+                rowNum = 1;
+            }
+        } else {
+            // Create new workbook for full sync or if delta report doesn't exist
+            workbook = new XSSFWorkbook();
+            sheet = workbook.createSheet("Migration Report");
+            createHeaderRow(sheet);
+        }
 
         // Data rows
-        int rowNum = 1;
         long timestamp = System.currentTimeMillis();
         for (Map.Entry<String, Integer> entry : totalRows.entrySet()) {
             Row row = sheet.createRow(rowNum++);
@@ -416,9 +434,9 @@ public class Migrator {
         }
 
         // Write to file
-        try (FileOutputStream fileOut = new FileOutputStream("migration_report.xlsx")) {
+        try (FileOutputStream fileOut = new FileOutputStream(reportFileName)) {
             workbook.write(fileOut);
-            logger.info("Excel report generated: migration_report.xlsx");
+            logger.info("Excel report generated: {}", reportFileName);
         } catch (IOException e) {
             logger.error("Error generating report: {}", e.getMessage());
         } finally {
@@ -429,6 +447,14 @@ public class Migrator {
             }
         }
         logger.info("Report generation completed");
+    }
+    
+    private void createHeaderRow(Sheet sheet) {
+        Row headerRow = sheet.createRow(0);
+        headerRow.createCell(0).setCellValue("Table Name");
+        headerRow.createCell(1).setCellValue("Total Rows Migrated");
+        headerRow.createCell(2).setCellValue("Migration Type");
+        headerRow.createCell(3).setCellValue("Timestamp");
     }
 
     private List<String> getColumnNames(String tableName) throws SQLException {

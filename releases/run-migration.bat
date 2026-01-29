@@ -8,7 +8,7 @@ echo Tables to migrate: prheaderhist,hotlink_audit
 echo.
 echo Starting the migration process...
 echo.
-java -cp "data-migration.jar;." com.migration.Main
+java -Xms128m -Xmx1024m -cp "data-migration.jar;." com.migration.Main
 echo.
 echo ========================================
 echo Migration process finished.
